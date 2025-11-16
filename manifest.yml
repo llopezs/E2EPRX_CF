@@ -1,6 +1,6 @@
 applications:
 - name: e2eprx-2
-  random-route: false
+  random-route: true
   path: ./target/e2eprx-0.0.1-SNAPSHOT.jar
   memory: 1024M
   buildpacks: 

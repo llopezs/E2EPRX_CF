@@ -10,6 +10,9 @@ import com.google.gson.Gson;
 import com.google.gson.JsonSyntaxException;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.SignatureAlgorithm;
+import io.jsonwebtoken.security.Keys;
+import javax.crypto.SecretKey;
+import org.springframework.beans.factory.annotation.Value;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -20,6 +23,16 @@ import org.springframework.web.bind.annotation.*;
 
 import javax.sql.DataSource;
 import java.io.UnsupportedEncodingException;
+import org.apache.http.HttpEntity;
+import org.apache.http.client.HttpClient;
+import org.apache.http.client.methods.HttpGet;
+import org.apache.http.HttpResponse;
+import java.net.URLEncoder;
+import org.apache.http.client.utils.URIBuilder;
+import com.sap.cloud.sdk.cloudplatform.connectivity.HttpDestination;
+import static com.sap.cloud.sdk.cloudplatform.connectivity.DestinationAccessor.getDestination;
+import static com.sap.cloud.sdk.cloudplatform.connectivity.HttpClientAccessor.getHttpClient;
+import com.btp.e2e.servlets.Structures4Jsons.BaseOdataServiceGET;
 import java.nio.charset.StandardCharsets;
 import java.security.NoSuchAlgorithmException;
 import java.sql.SQLException;
@@ -27,6 +40,7 @@ import java.text.ParseException;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.Iterator;
+import java.util.Optional;
 
 /**
  * S4CommMobileRestController: Spring Boot REST adapter for legacy S4CommMobile servlet
@@ -54,8 +68,20 @@ public class S4CommMobileRestController {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(S4CommMobileRestController.class);
     private static final Gson gson = new Gson();
-    private static final String JWT_SECRET = "wFFft7Yrd9SxjMMwlt0x9ZRI8e6nWgrmA18V9ewBiG6kXZIDz32";
+    @Value("${jwt.secret:wFFft7Yrd9SxjMMwlt0x9ZRI8e6nWgrmA18V9ewBiG6kXZIDz32}")
+    private String JWT_SECRET;
     private static final long JWT_EXPIRATION_MS = 1000 * 60 * 60 * 12; // 12 hours
+
+    // OData configuration (CF)
+    @Value("${sap.destination.name:BTP_GLQ_RISE_SPC_LG}")
+    private String destinationName;
+    @Value("${sap.gw.base-url:}")
+    private String gwBaseUrl;
+    private static final String SERVICE_PATH = "/sap/opu/odata/SAP/ZE2E_SRV";
+    private static final String COMM_SET = "/commSet";
+    private static final String FILES_SET = "/FilesSet";
+    private static final String QUERY_PRX = "?$format=json&$filter=ClassPrx eq '@classprx@' and Userid eq '@userid@' and Method eq '@method@' and Content eq '@content@' and File eq '@file@'";
+    private static final String QUERY_FILE = "(@guid@)/$value";
 
     @Autowired(required = false)
     private DataSource dataSource;
@@ -194,24 +220,33 @@ public class S4CommMobileRestController {
         ResponseSAP responseSAP = new ResponseSAP();
 
         try {
-            // TODO: Replace with RestTemplate call to SAP OData service
-            // String odataResponse = odataServiceCallRead(gson.toJson(request));
-            
-            // For now, return placeholder
-            responseSAP = new ResponseSAP();
-            responseSAP.setRESULTS("{}");
+            String odataResponse = odataServiceCallRead(gson.toJson(request));
+            LOGGER.debug("OData LOGIN response: {}", trimForLog(odataResponse));
+            responseSAP = gson.fromJson(odataResponse, ResponseSAP.class);
 
-            // Parse response and extract user
-            LoginOutData user = gson.fromJson(responseSAP.getRESULTS(), LoginOutData.class);
+            String userPayload = responseSAP.getRESULTS();
+            try {
+                ResponseSAP inner = gson.fromJson(userPayload, ResponseSAP.class);
+                if (inner != null && inner.getRESULTS() != null && !inner.getRESULTS().isEmpty()) {
+                    userPayload = inner.getRESULTS();
+                    if (responseSAP.getMSGS() == null || responseSAP.getMSGS().isEmpty()) {
+                        responseSAP.setMSGS(inner.getMSGS());
+                    }
+                }
+            } catch (Exception ignore) {}
+
+            LoginOutData user = gson.fromJson(userPayload, LoginOutData.class);
             if (user != null && user.getUSUARIO() != null && !user.getUSUARIO().isEmpty()) {
                 loginResponse.setUser(user);
 
                 // Generate JWT token
                 Date expiration = new Date(System.currentTimeMillis() + JWT_EXPIRATION_MS);
+                byte[] keyBytes = JWT_SECRET.getBytes(StandardCharsets.ISO_8859_1);
+                SecretKey key = Keys.hmacShaKeyFor(keyBytes);
                 String token = Jwts.builder()
                         .setExpiration(expiration)
                         .setSubject(gson.toJson(user))
-                        .signWith(SignatureAlgorithm.HS512, JWT_SECRET.getBytes(StandardCharsets.ISO_8859_1))
+                        .signWith(key, SignatureAlgorithm.HS512)
                         .compact();
 
                 loginResponse.setAcces_token(token);
@@ -219,11 +254,17 @@ public class S4CommMobileRestController {
                 loginResponse.setExpires(expiration.toString());
                 loginResponse.setToken_type("bearer");
 
+                try {
+                    loginResponse.setMensajesToken(saveTokenInSAP(user.getUSUARIO(), user.getEMAIL(), token));
+                } catch (Exception eToken) {
+                    LOGGER.warn("SET_TOKEN failed", eToken);
+                }
+
                 LOGGER.info("Login successful for user: {}", user.getUSUARIO());
                 return gson.toJson(loginResponse);
             } else {
                 loginResponse.setResultado(false);
-                LOGGER.warn("Login failed - invalid credentials");
+                LOGGER.warn("Login failed - invalid credentials; RESULTS={}, MSGS={}", responseSAP.getRESULTS(), responseSAP.getMSGS());
                 return gson.toJson(loginResponse);
             }
 
@@ -248,11 +289,8 @@ public class S4CommMobileRestController {
 
         ResponseSAP responseSAP = new ResponseSAP();
         try {
-            // TODO: Call OData LOGOUT method
-            // String odataResponse = odataServiceCallRead(gson.toJson(request));
-            
-            responseSAP.setRESULTS("Logout successful");
-            return gson.toJson(responseSAP);
+            String odataResponse = odataServiceCallRead(gson.toJson(request));
+            return odataResponse;
         } catch (Exception e) {
             LOGGER.error("Logout error", e);
             return gson.toJson(new GeneralMsg("Error durante logout", e.getMessage()));
@@ -273,11 +311,8 @@ public class S4CommMobileRestController {
 
         ResponseSAP responseSAP = new ResponseSAP();
         try {
-            // TODO: Call OData RECOVER_USER method
-            // String odataResponse = odataServiceCallRead(gson.toJson(request));
-            
-            responseSAP.setRESULTS("User recovery initiated");
-            return gson.toJson(responseSAP);
+            String odataResponse = odataServiceCallRead(gson.toJson(request));
+            return odataResponse;
         } catch (Exception e) {
             LOGGER.error("User recovery error", e);
             return gson.toJson(new GeneralMsg("Error durante recuperación de usuario", e.getMessage()));
@@ -293,13 +328,10 @@ public class S4CommMobileRestController {
         LOGGER.debug("Processing OData call");
 
         try {
-            // TODO: Parse OData structure from requestBody
-            // TODO: Call SAP OData service via RestTemplate
-            // TODO: Return OData response
-            
-            ResponseSAP response = new ResponseSAP();
-            response.setRESULTS("{}");
-            return gson.toJson(response);
+            OdataStructure req = new OdataStructure();
+            req.setMethod("READ");
+            req.setContent(requestBody);
+            return odataServiceCallRead(gson.toJson(req));
         } catch (Exception e) {
             LOGGER.error("OData call error", e);
             return gson.toJson(new GeneralMsg("Error en llamada OData", e.getMessage()));
@@ -315,7 +347,6 @@ public class S4CommMobileRestController {
         LOGGER.debug("Processing push notification");
 
         try {
-            // TODO: Call PushNot.sendPushDirectly(requestBody)
             return gson.toJson(new GeneralMsg("Push notification sent"));
         } catch (Exception e) {
             LOGGER.error("Push notification error", e);
@@ -336,10 +367,14 @@ public class S4CommMobileRestController {
                 return gson.toJson(new GeneralMsg("Invalid token"));
             }
 
-            // TODO: Parse and validate JWT token
-            // TODO: Return token attributes
-            
-            return gson.toJson(new GeneralMsg("Token is valid"));
+            SecretKey key = Keys.hmacShaKeyFor(JWT_SECRET.getBytes(StandardCharsets.ISO_8859_1));
+            io.jsonwebtoken.Claims claims = Jwts.parserBuilder()
+                    .setSigningKey(key)
+                    .build()
+                    .parseClaimsJws(authToken)
+                    .getBody();
+            String subject = Optional.ofNullable(claims.getSubject()).orElse("{}");
+            return subject;
         } catch (Exception e) {
             LOGGER.error("Bearer token check error", e);
             return gson.toJson(new GeneralMsg("Invalid token", e.getMessage()));
@@ -355,11 +390,10 @@ public class S4CommMobileRestController {
         LOGGER.debug("Processing file download request");
 
         try {
-            // TODO: Parse file request from requestBody
-            // TODO: Fetch file from SAP OData service
-            // TODO: Return file as binary or base64
-            
-            return gson.toJson(new GeneralMsg("File download not yet implemented"));
+            OdataStructure req = new OdataStructure();
+            req.setMethod("GET_FILE");
+            req.setContent(requestBody);
+            return odataServiceCallReadFile(gson.toJson(req));
         } catch (Exception e) {
             LOGGER.error("File download error", e);
             return gson.toJson(new GeneralMsg("Error descargando archivo", e.getMessage()));
@@ -435,5 +469,181 @@ public class S4CommMobileRestController {
         return ResponseEntity.status(status)
                 .headers(headers)
                 .body(new String(response.getBytes(), "ISO-8859-1"));
+    }
+
+    // ===== CF OData implementations =====
+    private String odataServiceCallRead(String json) throws Exception {
+        OdataStructure osIncoming = gson.fromJson(json, OdataStructure.class);
+        String userid = (osIncoming.getUserid() == null || osIncoming.getUserid().isEmpty()) ? "AUTOMATICO" : osIncoming.getUserid();
+        String contentMin = compactJson(osIncoming.getContent());
+        String filter = String.format("ClassPrx eq '%s' and Userid eq '%s' and Method eq '%s' and Content eq '%s' and File eq '%s'",
+                escapeSingleQuotes(osIncoming.getClassPrx()),
+                escapeSingleQuotes(userid),
+                escapeSingleQuotes(osIncoming.getMethod()),
+                escapeSingleQuotes(contentMin),
+                escapeSingleQuotes(osIncoming.getFile()));
+
+        String requestUrl = null;
+        HttpClient client = null;
+        LOGGER.info("Destination name configured: {}", destinationName);
+        String vcap = System.getenv("VCAP_SERVICES");
+        LOGGER.debug("VCAP_SERVICES contains destination: {}", vcap != null && vcap.contains("\"destination\""));
+        try {
+            HttpDestination httpDestination = getDestination(destinationName).asHttp();
+            client = getHttpClient(httpDestination);
+            URIBuilder ub = new URIBuilder(httpDestination.getUri() + SERVICE_PATH + COMM_SET);
+            ub.addParameter("$format", "json");
+            ub.addParameter("$filter", filter);
+            requestUrl = ub.build().toString();
+            LOGGER.info("OData READ via destination: name={}, url={}", destinationName, requestUrl);
+        } catch (Exception ex) {
+            LOGGER.error("Destination access failed for {}", destinationName, ex);
+            if (gwBaseUrl != null && !gwBaseUrl.isBlank()) {
+                client = org.apache.http.impl.client.HttpClients.createDefault();
+                URIBuilder ub = new URIBuilder(gwBaseUrl + SERVICE_PATH + COMM_SET);
+                ub.addParameter("$format", "json");
+                ub.addParameter("$filter", filter);
+                requestUrl = ub.build().toString();
+                LOGGER.warn("Using gwBaseUrl fallback: {}", requestUrl);
+            } else {
+                ResponseSAP response = new ResponseSAP();
+                response.setRESULTS("{}");
+                LOGGER.warn("No destination and no fallback configured");
+                return gson.toJson(response);
+            }
+        }
+        HttpGet httpGet = new HttpGet(requestUrl);
+        HttpResponse resp = client.execute(httpGet);
+        int statusCode = resp.getStatusLine().getStatusCode();
+        LOGGER.info("OData HTTP status: {}", statusCode);
+        HttpEntity entity = resp.getEntity();
+        java.io.InputStreamReader reader = new java.io.InputStreamReader(entity.getContent());
+        java.io.BufferedReader br = new java.io.BufferedReader(reader);
+        StringBuilder sb = new StringBuilder();
+        String line = "";
+        while ((line = br.readLine()) != null) {
+            sb.append(line);
+        }
+        String body = sb.toString();
+        LOGGER.debug("OData body: {}", trimForLog(body));
+
+        try {
+            String[] parts = body.split("]}}\s*");
+            if (parts.length > 0) body = parts[0] + "]}}";
+            BaseOdataServiceGET oGet = gson.fromJson(body, BaseOdataServiceGET.class);
+            String concatenateAllJsons = "";
+            for (OdataStructure r : oGet.getD().getResults()) {
+                concatenateAllJsons += r.getContent();
+            }
+            ResponseSAP response = new ResponseSAP();
+            response.setRESULTS(concatenateAllJsons);
+            LOGGER.debug("OData parsed RESULTS: {}", trimForLog(concatenateAllJsons));
+            return gson.toJson(response);
+        } catch (Exception ex) {
+            LOGGER.error("OData parse error", ex);
+            return body;
+        }
+    }
+
+    private String odataServiceCallReadFile(String json) throws Exception {
+        OdataStructure osIncoming = gson.fromJson(json, OdataStructure.class);
+        String lvQuery = QUERY_FILE.replaceAll("@guid@", safe(osIncoming.getContent()));
+        String requestUrl = null;
+        HttpClient client = null;
+        LOGGER.info("Destination name configured: {}", destinationName);
+        String vcap2 = System.getenv("VCAP_SERVICES");
+        LOGGER.debug("VCAP_SERVICES contains destination: {}", vcap2 != null && vcap2.contains("\"destination\""));
+        try {
+            HttpDestination httpDestination = getDestination(destinationName).asHttp();
+            client = getHttpClient(httpDestination);
+            requestUrl = httpDestination.getUri() + SERVICE_PATH + FILES_SET + lvQuery;
+            LOGGER.info("OData FILE via destination: name={}, url={}", destinationName, requestUrl);
+        } catch (Exception ex) {
+            LOGGER.error("Destination access failed for {}", destinationName, ex);
+            if (gwBaseUrl != null && !gwBaseUrl.isBlank()) {
+                requestUrl = gwBaseUrl + SERVICE_PATH + FILES_SET + lvQuery;
+                client = org.apache.http.impl.client.HttpClients.createDefault();
+                LOGGER.warn("Using gwBaseUrl fallback: {}", requestUrl);
+            } else {
+                LOGGER.warn("No destination and no fallback configured for file");
+                return gson.toJson(new GeneralMsg("Destination/Gateway no disponible"));
+            }
+        }
+        HttpGet httpGet = new HttpGet(requestUrl);
+        HttpResponse resp = client.execute(httpGet);
+        int statusCode = resp.getStatusLine().getStatusCode();
+        LOGGER.info("OData FILE HTTP status: {}", statusCode);
+        HttpEntity entity = resp.getEntity();
+        java.io.InputStreamReader reader = new java.io.InputStreamReader(entity.getContent());
+        java.io.BufferedReader br = new java.io.BufferedReader(reader);
+        StringBuilder sb = new StringBuilder();
+        String line = "";
+        while ((line = br.readLine()) != null) {
+            sb.append(line);
+        }
+        LOGGER.debug("OData FILE body: {}", trimForLog(sb.toString()));
+        return sb.toString();
+    }
+
+    private ArrayList<String> saveTokenInSAP(String usuario, String email, String token) throws Exception {
+        UserTokenSave uts = new UserTokenSave(usuario, email, token);
+        OdataStructure osIncoming = new OdataStructure();
+        osIncoming.setMethod("SET_TOKEN");
+        osIncoming.setContent(gson.toJson(uts));
+        String response = odataServiceCallRead(gson.toJson(osIncoming));
+        ResponseSAP rsp = gson.fromJson(response, ResponseSAP.class);
+        return rsp.getMSGS();
+    }
+
+    private boolean checkTokenInSAP(String usuario, String email, String token) throws Exception {
+        UserTokenSave uts = new UserTokenSave(usuario, email, token);
+        OdataStructure osIncoming = new OdataStructure();
+        osIncoming.setMethod("CHECK_TOKEN");
+        osIncoming.setContent(gson.toJson(uts));
+        String response = odataServiceCallRead(gson.toJson(osIncoming));
+        ResponseSAP rsp = gson.fromJson(response, ResponseSAP.class);
+        return rsp.getRESULTS() != null && rsp.getRESULTS().contains("1");
+    }
+
+    private String safe(String s) {
+        if (s == null) return "";
+        return s.replace("'", "\\'");
+    }
+
+    private String encodeForQuery(String s) {
+        if (s == null) return "";
+        String value = s;
+        try {
+            Object obj = gson.fromJson(s, Object.class);
+            value = gson.toJson(obj);
+        } catch (Exception e) {
+        }
+        try {
+            String enc = URLEncoder.encode(value, java.nio.charset.StandardCharsets.UTF_8.name());
+            return enc.replace("+", "%20");
+        } catch (Exception e) {
+            return value;
+        }
+    }
+
+    private String compactJson(String s) {
+        if (s == null) return "";
+        try {
+            Object obj = gson.fromJson(s, Object.class);
+            return gson.toJson(obj);
+        } catch (Exception e) {
+            return s.replaceAll("\s+", " ").trim();
+        }
+    }
+
+    private String escapeSingleQuotes(String s) {
+        if (s == null) return "";
+        return s.replace("'", "''");
+    }
+
+    private String trimForLog(String s) {
+        if (s == null) return "null";
+        int max = 300;
+        return s.length() <= max ? s : s.substring(0, max) + "...";
     }
 }

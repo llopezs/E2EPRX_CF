@@ -6,7 +6,7 @@ package com.btp.e2e.servlets.configs;
  * injected from application.properties or environment variables.
  */
 public class Destinations {
-	
-	public static final String door = "GW";
-	public static final String doorPost = "GW";
+
+    public static final String door = "BTP_GLQ_RISE_SPC_LG"; //PRD: BTP_INSTALACIONES
+    public static final String doorPost = "BTP_GLQ_RISE_SPC_LG"; //PRD: BTP_INSTALACIONES
 }
