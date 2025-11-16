@@ -1,0 +1,214 @@
+╔════════════════════════════════════════════════════════════════════════════════════╗
+║                    E2EPRX: NEO → Spring Boot / BTP CF Migration                    ║
+║                              Architecture Overview                                   ║
+╚════════════════════════════════════════════════════════════════════════════════════╝
+
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│ CLIENT LAYER (Mobile App, Web Frontend, External Systems)                          │
+└──────────────────┬──────────────────────────────────────────────────────────────────┘
+                   │
+                   │ HTTP/HTTPS
+                   ↓
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│ API GATEWAY / INGRESS (BTP CF Load Balancer)                                       │
+│  ├─ Route: /api/helloWorld                                                         │
+│  ├─ Route: /api/s4/health                                                          │
+│  └─ Route: /api/s4/request                                                         │
+└──────────────────┬──────────────────────────────────────────────────────────────────┘
+                   │
+                   ↓
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│ SPRING BOOT APPLICATION (Java 17, Tomcat Embedded)                                │
+│ ┌───────────────────────────────────────────────────────────────────────────────┐  │
+│ │  REQUEST HANDLERS (REST Controllers)                                         │  │
+│ │  ┌─────────────────────────┐  ┌──────────────────────────────────────────┐  │  │
+│ │  │  MainController.java    │  │  S4CommRestController.java               │  │  │
+│ │  │  ├─ GET /api/helloWorld │  │  ├─ POST /api/s4/health                 │  │  │
+│ │  │  └─ Returns "OK"        │  │  ├─ POST /api/s4/request                │  │  │
+│ │  └─────────────────────────┘  │  └─ (Business logic: TO-DO)             │  │  │
+│ │                               │                                          │  │  │
+│ │                               │  Injects: DataSource (from Spring config) │  │  │
+│ │                               └──────────────────────────────────────────┘  │  │
+│ └───────────────────────────────────────────────────────────────────────────────┘  │
+│                                    ↓                                               │
+│ ┌───────────────────────────────────────────────────────────────────────────────┐  │
+│ │  SERVICE LAYER (Business Logic)                                              │  │
+│ │  ┌────────────────────┐  ┌────────────────────┐  ┌───────────────────────┐  │  │
+│ │  │  S4CommService     │  │  LogService        │  │  UserService          │  │  │
+│ │  │  ├─ validate()     │  │  ├─ createLog()    │  │  ├─ authenticate()    │  │  │
+│ │  │  ├─ process()      │  │  ├─ readLog()      │  │  ├─ getUser()         │  │  │
+│ │  │  └─ callOData()    │  │  └─ updateLog()    │  │  └─ updateUser()      │  │  │
+│ │  └────────────────────┘  └────────────────────┘  └───────────────────────┘  │  │
+│ │                                                                               │  │
+│ │  Dependencies: Inject DataSource, RestTemplate for external calls            │  │
+│ └───────────────────────────────────────────────────────────────────────────────┘  │
+│                                    ↓                                               │
+│ ┌───────────────────────────────────────────────────────────────────────────────┐  │
+│ │  DATA ACCESS LAYER (DAOs)                                                     │  │
+│ │  ┌────────────────────┐  ┌────────────────────┐  ┌───────────────────────┐  │  │
+│ │  │  BaseDao           │  │  LogRecepcionesDAO │  │  UsuarioDAO           │  │  │
+│ │  │  ├─ create()       │  │  ├─ create()       │  │  ├─ create()          │  │  │
+│ │  │  ├─ read()         │  │  ├─ read()         │  │  ├─ read()            │  │  │
+│ │  │  ├─ update()       │  │  ├─ update()       │  │  ├─ authenticate()    │  │  │
+│ │  │  └─ delete()       │  │  └─ delete()       │  │  └─ validateToken()   │  │  │
+│ │  └────────────────────┘  └────────────────────┘  └───────────────────────┘  │  │
+│ │                                                                               │  │
+│ │  Injected: DataSource (pooled connection management)                         │  │
+│ │  Pattern: Legacy JDBC (manual Connection/PreparedStatement)                  │  │
+│ └───────────────────────────────────────────────────────────────────────────────┘  │
+│                                    ↓                                               │
+│ ┌───────────────────────────────────────────────────────────────────────────────┐  │
+│ │  ENTITIES (POJOs for Data Transfer)                                          │  │
+│ │  ┌────────────┐  ┌────────────┐  ┌───────────────┐  ┌──────────────────┐  │  │
+│ │  │  Usuario   │  │  LogRecep. │  │  LogVenta     │  │  ClaseMensaje    │  │  │
+│ │  │  ├─ id     │  │  ├─ id     │  │  ├─ id        │  │  ├─ id           │  │  │
+│ │  │  ├─ rut    │  │  ├─ datos  │  │  ├─ cantidad  │  │  ├─ mensaje      │  │  │
+│ │  │  ├─ nombre │  │  ├─ status │  │  ├─ monto     │  │  ├─ id_externo   │  │  │
+│ │  │  └─ clave  │  │  └─ timestamp  │  └─ ...       │  │  └─ timestamp    │  │  │
+│ │  └────────────┘  └────────────┘  └───────────────┘  └──────────────────┘  │  │
+│ │                                                                               │  │
+│ │  Base: PojoPrimary (reflection-based utilities, returnJson())                │  │
+│ └───────────────────────────────────────────────────────────────────────────────┘  │
+│                                    ↓                                               │
+│ ┌───────────────────────────────────────────────────────────────────────────────┐  │
+│ │  INFRASTRUCTURE (Spring Beans & Configuration)                               │  │
+│ │  ┌────────────────────────────────────────────────────────────────────────┐  │  │
+│ │  │  HanaDataSourceConfig                                                 │  │  │
+│ │  │  ├─ Reads: VCAP_SERVICES (from CF environment)                       │  │  │
+│ │  │  ├─ Fallback: spring.datasource.* properties                         │  │  │
+│ │  │  ├─ Creates: Pooled DataSource bean                                  │  │  │
+│ │  │  └─ Driver: com.sap.db.jdbc.Driver (HANA)                            │  │  │
+│ │  └────────────────────────────────────────────────────────────────────────┘  │  │
+│ │  ┌────────────────────────────────────────────────────────────────────────┐  │  │
+│ │  │  WebConfig (Tomcat Customization)                                     │  │  │
+│ │  │  ├─ Relaxed character validation                                      │  │  │
+│ │  │  └─ Custom connector properties                                       │  │  │
+│ │  └────────────────────────────────────────────────────────────────────────┘  │  │
+│ │  ┌────────────────────────────────────────────────────────────────────────┐  │  │
+│ │  │  Spring Boot Auto-Configuration                                       │  │  │
+│ │  │  ├─ spring-boot-starter-web (Tomcat, MVC)                             │  │  │
+│ │  │  ├─ spring-boot-starter-jdbc (Connection pooling)                     │  │  │
+│ │  │  ├─ spring-boot-starter-mail (JavaMail / Jakarta)                    │  │  │
+│ │  │  └─ Gson (via transitive dependency)                                  │  │  │
+│ │  └────────────────────────────────────────────────────────────────────────┘  │  │
+│ └───────────────────────────────────────────────────────────────────────────────┘  │
+│                                    ↓                                               │
+│ ┌───────────────────────────────────────────────────────────────────────────────┐  │
+│ │  EXTERNAL INTEGRATIONS (HTTP Clients)                                        │  │
+│ │  ├─ RestTemplate / WebClient (for SAP OData services)                       │  │
+│ │  ├─ JavaMailSender (for email notifications via SMTP)                       │  │
+│ │  └─ [Future] Custom HTTP clients for S4/HANA cloud services                │  │
+│ └───────────────────────────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+                                    ↓
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│ DATABASE LAYER (SAP HANA Cloud via HDI)                                           │
+│                                                                                     │
+│ ┌──────────────────────────────────────────────────────────────────────────────┐  │
+│ │ HDI Container (Schema: PUBLIC or Custom via HANA_SCHEMA env var)            │  │
+│ │                                                                              │  │
+│ │  Tables (created via CAP/CAP-like models or SQL scripts):                  │  │
+│ │  ├─ T_USUARIOS               (user accounts)                               │  │
+│ │  ├─ T_LOG_RECEPCIONES        (reception logs)                              │  │
+│ │  ├─ T_LOG_VENTAS             (sales logs)                                  │  │
+│ │  ├─ T_PARAMETROS             (system parameters)                           │  │
+│ │  ├─ T_PEDIDOS                (orders)                                      │  │
+│ │  └─ [Other business tables]                                                │  │
+│ │                                                                              │  │
+│ │  Sequences / Identity Columns (for auto-ID generation)                     │  │
+│ └──────────────────────────────────────────────────────────────────────────────┘  │
+│                                                                                     │
+│ Connection Pool (via HikariCP, managed by Spring JDBC)                             │
+│ ├─ Max connections: configured via spring.datasource.hikari.*                      │
+│ └─ Connection URL: jdbc:sap://host:30015/?databaseName=HDB&user=X&password=Y      │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+KEY MIGRATION CHANGES:
+
+┌─────────────────────────────────────┬─────────────────────────────────────────────┐
+│ LEGACY (SAP NetWeaver / NEO)        │ NEW (Spring Boot on BTP CF)                 │
+├─────────────────────────────────────┼─────────────────────────────────────────────┤
+│ web.xml routing                     │ @RequestMapping / @GetMapping / @PostMapping│
+│ HttpServlet (doPost/doGet)          │ @RestController                            │
+│ InitialContext JNDI lookup          │ Spring Dependency Injection                 │
+│ javax.mail.* imports                │ jakarta.mail.* (via Spring Mail)           │
+│ Manual DataSource management        │ Spring-managed DataSource bean             │
+│ Servlet filters (web.xml)           │ Spring Filters (Java config)                │
+│ Hard-coded configuration            │ application.properties / env vars           │
+│ SAP Cloud SDK (native)              │ Spring RestTemplate + service binding       │
+│ HttpServletRequest/Response         │ @RequestBody / @ResponseBody annotations   │
+└─────────────────────────────────────┴─────────────────────────────────────────────┘
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+DEPLOYMENT TOPOLOGY (BTP CF):
+
+  ┌──────────────────┐
+  │   App Cloud      │  (Cloud Foundry)
+  │ ┌──────────────┐ │
+  │ │ e2eprx app   │ │  (1-N instances, auto-scaling)
+  │ │ (Java 17)    │ │  Memory: 1024M per instance
+  │ │ Port: 8080   │ │
+  │ └────────┬─────┘ │
+  │          │       │
+  │     ┌────▼────┐  │
+  │     │ Tomcat  │  │
+  │     │Embedded │  │
+  │     └────┬────┘  │
+  └──────────┼───────┘
+             │
+     ┌───────▼──────────┐
+     │  BTP CF Network  │
+     └───────┬──────────┘
+             │
+   ┌─────────▼──────────┐
+   │  SAP HANA Cloud    │  (Database)
+   │ ┌────────────────┐ │
+   │ │  HDI Container │ │  (hdi-e2eprx service)
+   │ │  (Schema: Priv)│ │  (Service binding via VCAP_SERVICES)
+   │ │  (Port: 30015) │ │
+   │ └────────────────┘ │
+   └────────────────────┘
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+DATAFLOW EXAMPLE (Order Creation):
+
+1. Client Request
+   POST /api/s4/request
+   Body: { "action": "create_order", "order_data": {...} }
+        ↓
+2. MainController / S4CommRestController receives request
+   Parses JSON body
+        ↓
+3. S4CommService (business logic)
+   - Validates order data
+   - Checks user permissions
+   - Calls LogVentaDAO to create log entry
+        ↓
+4. LogVentaDAO (data access)
+   - Gets DataSource from Spring (injected)
+   - Opens connection (from pool)
+   - Executes INSERT SQL
+   - Closes connection (returns to pool)
+        ↓
+5. HANA Database
+   - Inserts record into T_LOG_VENTAS
+   - Returns success/failure
+        ↓
+6. Service processes response
+   - Builds response JSON
+   - (Optional) Sends email notification via JavaMailSender
+        ↓
+7. Controller returns response
+   Response: { "resultado": true, "id": 12345 }
+        ↓
+8. Client receives response
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+STATUS: ✅ FOUNDATION COMPLETE (Waiting for Business Logic Implementation)
+
+Last Updated: 2025-11-15
