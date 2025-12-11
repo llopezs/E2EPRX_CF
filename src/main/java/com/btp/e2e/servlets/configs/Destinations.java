@@ -7,6 +7,6 @@ package com.btp.e2e.servlets.configs;
  */
 public class Destinations {
 
-    public static final String door = "BTP_GLQ_RISE_SPC_LG"; //PRD: BTP_INSTALACIONES
-    public static final String doorPost = "BTP_GLQ_RISE_SPC_LG"; //PRD: BTP_INSTALACIONES
+    public static final String door = "BTP_GLQ_RISE_MOV_MERC"; //PRD: BTP_INSTALACIONES /QAS: BTP_GLQ_RISE_SPC_LG
+    public static final String doorPost = "BTP_GLQ_RISE_MOV_MERC"; //PRD: BTP_INSTALACIONES /QAS: BTP_GLQ_RISE_SPC_LG
 }

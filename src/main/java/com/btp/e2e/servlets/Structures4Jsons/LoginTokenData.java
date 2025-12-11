@@ -9,7 +9,7 @@ import java.util.ArrayList;
 public class LoginTokenData {
     private boolean resultado = false;
     private LoginOutData user = new LoginOutData();
-    private String acces_token = "";
+    private String access_token = "";
     private String expires = "";
     private String token_type = "bearer";
     private String mensaje = "";
@@ -35,12 +35,12 @@ public class LoginTokenData {
         this.user = user;
     }
 
-    public String getAcces_token() {
-        return acces_token;
+    public String getAccess_token() {
+        return access_token;
     }
 
-    public void setAcces_token(String acces_token) {
-        this.acces_token = acces_token;
+    public void setAccess_token(String access_token) {
+        this.access_token = access_token;
     }
 
     public String getExpires() {

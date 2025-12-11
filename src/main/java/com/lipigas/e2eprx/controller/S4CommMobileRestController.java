@@ -35,6 +35,7 @@ import static com.sap.cloud.sdk.cloudplatform.connectivity.HttpClientAccessor.ge
 import com.btp.e2e.servlets.Structures4Jsons.BaseOdataServiceGET;
 import java.nio.charset.StandardCharsets;
 import java.security.NoSuchAlgorithmException;
+import java.security.MessageDigest;
 import java.sql.SQLException;
 import java.text.ParseException;
 import java.util.ArrayList;
@@ -63,7 +64,7 @@ import java.util.Optional;
  * - Add Tiempo utility for timezone handling
  */
 @RestController
-@RequestMapping("/api/mobile")
+@RequestMapping("/mobile")
 public class S4CommMobileRestController {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(S4CommMobileRestController.class);
@@ -73,7 +74,7 @@ public class S4CommMobileRestController {
     private static final long JWT_EXPIRATION_MS = 1000 * 60 * 60 * 12; // 12 hours
 
     // OData configuration (CF)
-    @Value("${sap.destination.name:BTP_GLQ_RISE_SPC_LG}")
+    @Value("${sap.destination.name:BTP_GLQ_RISE_MOV_MERC}")
     private String destinationName;
     @Value("${sap.gw.base-url:}")
     private String gwBaseUrl;
@@ -236,20 +237,24 @@ public class S4CommMobileRestController {
             } catch (Exception ignore) {}
 
             LoginOutData user = gson.fromJson(userPayload, LoginOutData.class);
+
+            ArrayList<String> msgs = responseSAP.getMSGS() == null ? new ArrayList<>() : responseSAP.getMSGS();
+            String joinedMsg = String.join(", ", msgs);
             if (user != null && user.getUSUARIO() != null && !user.getUSUARIO().isEmpty()) {
                 loginResponse.setUser(user);
+                loginResponse.setMensaje(joinedMsg);
+                loginResponse.setMensajesToken(msgs);
 
                 // Generate JWT token
                 Date expiration = new Date(System.currentTimeMillis() + JWT_EXPIRATION_MS);
-                byte[] keyBytes = JWT_SECRET.getBytes(StandardCharsets.ISO_8859_1);
-                SecretKey key = Keys.hmacShaKeyFor(keyBytes);
+                javax.crypto.SecretKey key = getSigningKey();
                 String token = Jwts.builder()
-                        .setExpiration(expiration)
-                        .setSubject(gson.toJson(user))
-                        .signWith(key, SignatureAlgorithm.HS512)
-                        .compact();
+                    .setExpiration(expiration)
+                    .setSubject(gson.toJson(user))
+                    .signWith(key, SignatureAlgorithm.HS512)
+                    .compact();
 
-                loginResponse.setAcces_token(token);
+                loginResponse.setAccess_token(token);
                 loginResponse.setResultado(true);
                 loginResponse.setExpires(expiration.toString());
                 loginResponse.setToken_type("bearer");
@@ -264,6 +269,8 @@ public class S4CommMobileRestController {
                 return gson.toJson(loginResponse);
             } else {
                 loginResponse.setResultado(false);
+                loginResponse.setMensaje(joinedMsg);
+                loginResponse.setMensajesToken(msgs);
                 LOGGER.warn("Login failed - invalid credentials; RESULTS={}, MSGS={}", responseSAP.getRESULTS(), responseSAP.getMSGS());
                 return gson.toJson(loginResponse);
             }
@@ -367,8 +374,8 @@ public class S4CommMobileRestController {
                 return gson.toJson(new GeneralMsg("Invalid token"));
             }
 
-            SecretKey key = Keys.hmacShaKeyFor(JWT_SECRET.getBytes(StandardCharsets.ISO_8859_1));
-            io.jsonwebtoken.Claims claims = Jwts.parserBuilder()
+                javax.crypto.SecretKey key = getSigningKey();
+                io.jsonwebtoken.Claims claims = Jwts.parserBuilder()
                     .setSigningKey(key)
                     .build()
                     .parseClaimsJws(authToken)
@@ -645,5 +652,24 @@ public class S4CommMobileRestController {
         if (s == null) return "null";
         int max = 300;
         return s.length() <= max ? s : s.substring(0, max) + "...";
+    }
+
+    /**
+     * Return a SecretKey suitable for HS512. If configured secret is shorter
+     * than 64 bytes, derive a 512-bit key using SHA-512 digest of the secret.
+     * Falls back to a randomly generated secure key if SHA-512 isn't available.
+     */
+    private javax.crypto.SecretKey getSigningKey() {
+        try {
+            byte[] keyBytes = JWT_SECRET == null ? new byte[0] : JWT_SECRET.getBytes(StandardCharsets.ISO_8859_1);
+            if (keyBytes.length < 64) {
+                MessageDigest md = MessageDigest.getInstance("SHA-512");
+                keyBytes = md.digest(keyBytes);
+            }
+            return Keys.hmacShaKeyFor(keyBytes);
+        } catch (NoSuchAlgorithmException e) {
+            LOGGER.warn("SHA-512 not available for key derivation, generating random HS512 key", e);
+            return Keys.secretKeyFor(SignatureAlgorithm.HS512);
+        }
     }
 }
