@@ -520,35 +520,57 @@ public class S4CommMobileRestController {
             }
         }
         HttpGet httpGet = new HttpGet(requestUrl);
-        HttpResponse resp = client.execute(httpGet);
-        int statusCode = resp.getStatusLine().getStatusCode();
-        LOGGER.info("OData HTTP status: {}", statusCode);
-        HttpEntity entity = resp.getEntity();
-        java.io.InputStreamReader reader = new java.io.InputStreamReader(entity.getContent());
-        java.io.BufferedReader br = new java.io.BufferedReader(reader);
-        StringBuilder sb = new StringBuilder();
-        String line = "";
-        while ((line = br.readLine()) != null) {
-            sb.append(line);
-        }
-        String body = sb.toString();
-        LOGGER.debug("OData body: {}", trimForLog(body));
-
+        java.io.InputStreamReader reader = null;
+        java.io.BufferedReader br = null;
         try {
-            String[] parts = body.split("]}}\s*");
-            if (parts.length > 0) body = parts[0] + "]}}";
-            BaseOdataServiceGET oGet = gson.fromJson(body, BaseOdataServiceGET.class);
-            String concatenateAllJsons = "";
-            for (OdataStructure r : oGet.getD().getResults()) {
-                concatenateAllJsons += r.getContent();
+            HttpResponse resp = client.execute(httpGet);
+            int statusCode = resp.getStatusLine().getStatusCode();
+            LOGGER.info("OData HTTP status: {}", statusCode);
+            HttpEntity entity = resp.getEntity();
+            reader = new java.io.InputStreamReader(entity.getContent(), StandardCharsets.UTF_8);
+            br = new java.io.BufferedReader(reader);
+            StringBuilder sb = new StringBuilder();
+            String line = "";
+            while ((line = br.readLine()) != null) {
+                sb.append(line);
             }
-            ResponseSAP response = new ResponseSAP();
-            response.setRESULTS(concatenateAllJsons);
-            LOGGER.debug("OData parsed RESULTS: {}", trimForLog(concatenateAllJsons));
-            return gson.toJson(response);
-        } catch (Exception ex) {
-            LOGGER.error("OData parse error", ex);
-            return body;
+            String body = sb.toString();
+            LOGGER.debug("OData body: {}", trimForLog(body));
+
+            try {
+                String[] parts = body.split("]}}\s*");
+                if (parts.length > 0) body = parts[0] + "]}}";
+                BaseOdataServiceGET oGet = gson.fromJson(body, BaseOdataServiceGET.class);
+                String concatenateAllJsons = "";
+                for (OdataStructure r : oGet.getD().getResults()) {
+                    concatenateAllJsons += r.getContent();
+                }
+                ResponseSAP response = new ResponseSAP();
+                response.setRESULTS(concatenateAllJsons);
+                LOGGER.debug("OData parsed RESULTS: {}", trimForLog(concatenateAllJsons));
+                return gson.toJson(response);
+            } catch (Exception ex) {
+                LOGGER.error("OData parse error", ex);
+                return body;
+            }
+        } finally {
+            // Liberar recursos en orden inverso
+            if (br != null) {
+                try {
+                    br.close();
+                } catch (Exception e) {
+                    LOGGER.debug("Error closing BufferedReader", e);
+                }
+            }
+            if (reader != null) {
+                try {
+                    reader.close();
+                } catch (Exception e) {
+                    LOGGER.debug("Error closing InputStreamReader", e);
+                }
+            }
+            // Liberar la conexión HTTP
+            httpGet.releaseConnection();
         }
     }
 
@@ -577,19 +599,42 @@ public class S4CommMobileRestController {
             }
         }
         HttpGet httpGet = new HttpGet(requestUrl);
-        HttpResponse resp = client.execute(httpGet);
-        int statusCode = resp.getStatusLine().getStatusCode();
-        LOGGER.info("OData FILE HTTP status: {}", statusCode);
-        HttpEntity entity = resp.getEntity();
-        java.io.InputStreamReader reader = new java.io.InputStreamReader(entity.getContent());
-        java.io.BufferedReader br = new java.io.BufferedReader(reader);
-        StringBuilder sb = new StringBuilder();
-        String line = "";
-        while ((line = br.readLine()) != null) {
-            sb.append(line);
+        java.io.InputStreamReader reader = null;
+        java.io.BufferedReader br = null;
+        try {
+            HttpResponse resp = client.execute(httpGet);
+            int statusCode = resp.getStatusLine().getStatusCode();
+            LOGGER.info("OData FILE HTTP status: {}", statusCode);
+            HttpEntity entity = resp.getEntity();
+            reader = new java.io.InputStreamReader(entity.getContent(), StandardCharsets.UTF_8);
+            br = new java.io.BufferedReader(reader);
+            StringBuilder sb = new StringBuilder();
+            String line = "";
+            while ((line = br.readLine()) != null) {
+                sb.append(line);
+            }
+            String result = sb.toString();
+            LOGGER.debug("OData FILE body: {}", trimForLog(result));
+            return result;
+        } finally {
+            // Liberar recursos en orden inverso
+            if (br != null) {
+                try {
+                    br.close();
+                } catch (Exception e) {
+                    LOGGER.debug("Error closing BufferedReader", e);
+                }
+            }
+            if (reader != null) {
+                try {
+                    reader.close();
+                } catch (Exception e) {
+                    LOGGER.debug("Error closing InputStreamReader", e);
+                }
+            }
+            // Liberar la conexión HTTP
+            httpGet.releaseConnection();
         }
-        LOGGER.debug("OData FILE body: {}", trimForLog(sb.toString()));
-        return sb.toString();
     }
 
     private ArrayList<String> saveTokenInSAP(String usuario, String email, String token) throws Exception {
